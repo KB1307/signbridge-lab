@@ -1,0 +1,21 @@
+{
+ "params": 4538697,
+ "window": 96,
+ "in_dim": 524,
+ "config": {
+  "in_dim": 524,
+  "n_classes": 2731,
+  "n_letters": 59,
+  "n_gloss": 6000,
+  "dim": 192,
+  "n_groups": 3,
+  "convs_per_group": 3,
+  "kernel": 17,
+  "heads": 4,
+  "attn_window": 64,
+  "expand": 2,
+  "dropout": 0.1,
+  "causal": true
+ },
+ "weights": "random (speed test only)"
+}
