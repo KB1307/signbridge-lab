@@ -3,11 +3,11 @@
 (function () {
   'use strict';
   const $ = s => document.querySelector(s);
-  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline;
+  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon;
   const D = F.D, W = L.N_RAW * 3;
 
   // ------------------------------------------------------------ settings (per-viewer convenience)
-  const DEFAULTS = { restY: 1.0, sens: 1.25, handed: 'auto', speak: 'sentence', fast: '1', signer: '', facing: 'user' };
+  const DEFAULTS = { restY: 1.0, sens: 1.25, handed: 'auto', speak: 'sentence', fast: '1', signer: '', facing: 'user', sugSet: 'starter' };
   const settings = Object.assign({}, DEFAULTS, (() => { try { return JSON.parse(localStorage.getItem('sb-lab-settings') || '{}'); } catch { return {}; } })());
   const saveSettings = () => { try { localStorage.setItem('sb-lab-settings', JSON.stringify(settings)); } catch {} };
 
@@ -42,7 +42,7 @@
     video: document.createElement('video'), aspect: 4 / 3, lastRes: null,
     pipe: null, model: new R.FewShot({ tauSlack: settings.sens }), examples: [],
     times: { lm: [], pipe: [] }, frameTimes: [], presence: [], light: null,
-    teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null,
+    teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null, lex: null, lastStats: null,
   };
   S.video.playsInline = true; S.video.muted = true;
   const canvas = $('#view'), ctx = canvas.getContext('2d');
@@ -276,7 +276,7 @@
     if (out.closed) {
       saveExample(T.label, out.closed);
       T.done++;
-      if (T.done >= T.total) { endTeach(`Saved ${T.total} examples of “${T.label}”.`); $('#teachWord').value = ''; return; }
+      if (T.done >= T.total) { endTeach(`Saved ${T.total} examples of “${T.label}”.`); $('#teachWord').value = ''; renderSignCard(); return; }
       T.phase = 'rest'; T.restSince = 0; showPrompt(`Got it. Lower your hands for the next one (${T.done + 1} of ${T.total})`);
     } else if (out.state === 'idle' && now - T.goAt > 8000) {
       T.goAt = now; showPrompt(`No sign seen yet. Raise your hands above the dashed line and sign <b>${esc(T.label)}</b>`);
@@ -300,18 +300,24 @@
       const t0 = performance.now();
       const stats = S.model.fit(S.examples.map(e => ({ label: e.label, frames: unflat(e.frames, D) })));
       S.fitMs = performance.now() - t0;
-      renderVocab(stats); renderCaption(); renderData();
+      renderVocab(stats); renderSignCard(); renderCaption(); renderData();
     }, 30);
   }
   function renderVocab(stats) {
+    if (stats !== undefined) S.lastStats = stats; else stats = S.lastStats;
     const counts = new Map();
     for (const e of S.examples) counts.set(e.label, (counts.get(e.label) || 0) + 1);
     const items = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const pairsOf = new Map();
+    for (const p of X.taughtPairs(S.lex, new Set(counts.keys()))) {
+      for (const [x, y] of [[p.a, p.b], [p.b, p.a]]) { if (!pairsOf.has(x)) pairsOf.set(x, []); pairsOf.get(x).push(`${y} (${p.why})`); }
+    }
     $('#vocab').innerHTML = items.length ? items.map(([l, n]) => {
       const pc = stats && stats.perClass.find(p => p.label === l);
       const st = pc && pc.n ? `${pc.correct}/${pc.n} self-test${pc.confusedWith.length ? ` · confused with ${pc.confusedWith.map(esc).join(', ')}` : ''}` : n < 2 ? 'needs 2+ examples' : '';
-      return `<li><span class="name">${esc(l)}</span><span class="meta">${n} ex · ${st}</span><button data-del="${esc(l)}" aria-label="Delete ${esc(l)}">Delete</button></li>`;
-    }).join('') : '<li><span class="muted">No signs taught yet. Pick a word below or type your own, then press Record.</span></li>';
+      const pr = pairsOf.has(l) ? ` <span class="pair">· only differs from ${pairsOf.get(l).map(esc).join(', ')}</span>` : '';
+      return `<li><span class="name">${esc(l)}</span><span class="meta">${n} ex · ${st}${pr}</span><button data-del="${esc(l)}" aria-label="Delete ${esc(l)}">Delete</button></li>`;
+    }).join('') : '<li><span class="muted">No signs taught yet. Pick a word above or type your own, then press Record.</span></li>';
     const box = $('#selfTest');
     if (stats && stats.n) {
       box.hidden = false;
@@ -320,8 +326,53 @@
         <tr><td>Misses</td><td>${wrong} wrong word, ${rejected} rejected as too different (shown as [?])</td></tr>
         <tr><td>Note</td><td>Same signer as the examples, so this is the best case. Test a second signer on the live camera.</td></tr></table>`;
     } else box.hidden = true;
-    $('#suggest').innerHTML = ['hello', 'thank you', 'yes', 'no', 'please', 'help', 'name', 'water']
-      .filter(w => !counts.has(w)).map(w => `<button type="button" data-word="${w}">${w}</button>`).join('');
+    renderSuggest(counts);
+  }
+  const SUGGEST_MAX = 40;
+  function renderSuggest(counts) {
+    const sets = S.lex && S.lex.data.sets, set = sets && (sets[settings.sugSet] || sets.starter);
+    const keys = set ? set.keys : ['hello', 'thank you', 'yes', 'no', 'please', 'help', 'name', 'water'];
+    const left = keys.filter(w => !counts.has(w));
+    $('#suggest').innerHTML = left.slice(0, SUGGEST_MAX).map(w => `<button type="button" data-word="${esc(w)}">${esc(w)}</button>`).join('');
+    $('#suggestNote').textContent = set
+      ? `${set.label}: ${left.length} not taught yet${left.length > SUGGEST_MAX ? `, showing the ${SUGGEST_MAX} most common` : ''}`
+      : 'Suggested signs';
+  }
+
+  // ------------------------------------------------------------ sign list (ASL-LEX coding + look-alikes)
+  function renderSignCard() {
+    const box = $('#signCard'), word = X.norm($('#teachWord').value);
+    if (!word || !S.lex) { box.hidden = true; box.innerHTML = ''; return; }
+    const hit = X.lookup(S.lex, word);
+    if (!hit) {
+      box.hidden = false;
+      box.innerHTML = `<span class="muted">“${esc(word)}” is not in the built-in sign list. You can still teach it.</span>`;
+      return;
+    }
+    const s = hit.sign, desc = X.describe(s);
+    const facts = [X.frequencyWord(s.f), s.wv ? `${s.wv} WLASL videos` : ''].filter(Boolean).join(' · ');
+    const taught = new Set(S.examples.map(e => e.label));
+    const conf = X.confusables(S.lex, hit.key, taught);
+    const confHtml = conf.length
+      ? `<span class="warn">Easy to confuse with ${conf.map(c => `<button type="button" data-word="${esc(c.key)}">${esc(c.key)}</button> (${esc(c.why)} only${c.taught ? ', taught' : ''})`).join(', ')}</span>`
+      : '';
+    box.hidden = false;
+    box.innerHTML = `<span><b>${esc(hit.key)}</b>${facts ? ` <span class="muted small">${esc(facts)}</span>` : ''}</span>`
+      + (desc ? `<span class="code">${esc(desc)}</span>` : '<span class="muted small">No ASL-LEX coding for this word (several variants share the name).</span>')
+      + confHtml;
+  }
+  async function loadLexicon() {
+    try {
+      const r = await fetch('data/lexicon.json');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      S.lex = X.index(await r.json());
+    } catch (e) { S.lex = null; window.SBLab.lexError = String(e && e.message || e); return; }
+    const sel = $('#suggestSet'), sets = S.lex.data.sets;
+    if (!sets[settings.sugSet]) settings.sugSet = 'starter';
+    sel.innerHTML = Object.entries(sets).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('');
+    sel.value = settings.sugSet; sel.hidden = false;
+    const credit = $('#lexCredit'); credit.textContent = S.lex.data.attribution; credit.hidden = false;
+    renderVocab(); renderSignCard();
   }
 
   // ------------------------------------------------------------ video file
@@ -461,7 +512,10 @@
   $('#flipBtn').addEventListener('click', () => { settings.facing = settings.facing === 'user' ? 'environment' : 'user'; saveSettings(); startCamera(); });
   $('#teachBtn').addEventListener('click', () => (S.teach ? endTeach('Recording cancelled.') : startTeach()));
   $('#teachWord').addEventListener('keydown', e => { if (e.key === 'Enter' && !S.teach) startTeach(); });
-  $('#suggest').addEventListener('click', e => { const w = e.target.dataset && e.target.dataset.word; if (w) { $('#teachWord').value = w; $('#teachWord').focus(); } });
+  $('#suggest').addEventListener('click', e => { const w = e.target.dataset && e.target.dataset.word; if (w) { $('#teachWord').value = w; $('#teachWord').focus(); renderSignCard(); } });
+  $('#signCard').addEventListener('click', e => { const w = e.target.dataset && e.target.dataset.word; if (w && !S.teach) { $('#teachWord').value = w; renderSignCard(); } });
+  $('#teachWord').addEventListener('input', renderSignCard);
+  $('#suggestSet').addEventListener('change', e => { settings.sugSet = e.target.value; saveSettings(); renderVocab(); });
   $('#vocab').addEventListener('click', async e => {
     const l = e.target.dataset && e.target.dataset.del; if (!l) return;
     for (const x of S.examples.filter(x => x.label === l)) await store.del(x.id);
@@ -525,11 +579,13 @@
     teachStart(label, total) { $('#teachWord').value = label; $('#teachReps').value = total; S.source = 'camera'; if (!S.pipe) newPipe(); startTeach(); return !!S.teach; },
     endSentence() { S.lastWordAt = 0; return maybeEndSentence('idle'); },
     importPack, packExamples, runVideo, speedTest,
+    lexicon: () => S.lex, renderSignCard,
   };
 
   // ------------------------------------------------------------ boot
   (async () => {
     renderVocab(null); renderCaption(); renderData();
+    loadLexicon().then(() => { window.SBLab.lexReady = true; });
     S.examples = await store.all().catch(() => []);
     if (S.examples.length) refit();
     if (!window.isSecureContext || !navigator.mediaDevices) {
