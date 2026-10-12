@@ -98,6 +98,16 @@ input[type="number"] { width: 5.5em; }
 .signcard button { border: 0; background: none; padding: 0; color: inherit; text-decoration: underline dotted; cursor: pointer; font: inherit; }
 .vocab .pair { color: var(--unsure); }
 .credit { font-size: .78rem; color: var(--muted); }
+.demo { display: grid; gap: 8px; background: var(--sunk); border-radius: 8px; padding: 10px; }
+@media (min-width: 520px) { .demo { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+.demo canvas { width: 100%; aspect-ratio: 4 / 3; border-radius: 6px; display: block; background: var(--panel); }
+.demo .modes { display: flex; gap: 6px; flex-wrap: wrap; }
+.demo .modes button, .demo .modes a { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 11px; font-size: .85rem; cursor: pointer; color: inherit; text-decoration: none; }
+.demo .modes button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.demo ol { margin: 0; padding-left: 1.2em; font-size: .9rem; display: grid; gap: 2px; }
+.demo .note { font-size: .78rem; color: var(--muted); margin: 0; }
+.stage canvas.pip { position: absolute; top: 10px; right: 10px; width: 36%; height: auto; aspect-ratio: 4 / 3; z-index: 2; border-radius: 8px; border: 2px solid var(--hand); background: var(--panel); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.pip-label { position: absolute; z-index: 2; top: 14px; right: calc(36% + 18px); background: rgba(6,20,22,.82); color: #fff; border-radius: 6px; padding: 2px 8px; font-size: .8rem; }
 .vocab { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .vocab li { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 8px 10px; background: var(--sunk); border-radius: 8px; }
 .vocab .name { font-weight: 700; overflow-wrap: anywhere; }
@@ -139,6 +149,8 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
       </div>
       <div class="sigflag" id="sigflag" hidden>RESTING</div>
       <div class="prompt" id="prompt" hidden></div>
+      <canvas class="pip" id="demoPip" hidden aria-label="Example of the sign to copy"></canvas>
+      <span class="pip-label" id="pipLabel" hidden>Copy this</span>
     </div>
     <div class="row">
       <div class="chips" id="chips" aria-live="polite"></div>
@@ -171,6 +183,18 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
         <button class="btn primary" id="teachBtn" disabled>Record</button>
       </div>
       <div class="signcard" id="signCard" hidden aria-live="polite"></div>
+      <div class="demo" id="demo" hidden>
+        <canvas id="demoCanvas" aria-label="Animated example of the sign"></canvas>
+        <div style="display:grid;gap:8px">
+          <div class="modes" id="demoModes">
+            <button type="button" data-mode="taught" aria-pressed="false">Taught example</button>
+            <button type="button" data-mode="diagram" aria-pressed="false">Diagram</button>
+            <a id="demoVideo" target="_blank" rel="noopener noreferrer">Real videos &#8599;</a>
+          </div>
+          <ol id="demoSteps"></ol>
+          <p class="note" id="demoNote"></p>
+        </div>
+      </div>
       <div class="suggest-head">
         <span class="muted small" id="suggestNote">Suggested signs</span>
         <select id="suggestSet" aria-label="Suggested sign list" hidden></select>
@@ -264,6 +288,7 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 <script src="js/recognizer.js"></script>
 <script src="js/pipeline.js"></script>
 <script src="js/lexicon.js"></script>
+<script src="js/demo.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

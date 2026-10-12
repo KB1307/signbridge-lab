@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   const $ = s => document.querySelector(s);
-  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon;
+  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo;
   const D = F.D, W = L.N_RAW * 3;
 
   // ------------------------------------------------------------ settings (per-viewer convenience)
@@ -259,9 +259,11 @@
     if (S.source !== 'camera') { toast('Start the camera first.'); return; }
     S.teach = { label, total, done: 0, phase: 'rest', restSince: 0, goAt: 0 };
     $('#teachBtn').textContent = 'Cancel'; showPrompt(`Lower your hands to get ready for <b>${esc(label)}</b>`);
+    renderSignCard();
   }
   function endTeach(msg) {
     S.teach = null; $('#teachBtn').textContent = 'Record'; $('#prompt').hidden = true; if (msg) toast(msg);
+    syncPip();
   }
   function showPrompt(html) { const p = $('#prompt'); p.innerHTML = html; p.hidden = false; }
   function teachStep(out) {
@@ -340,7 +342,61 @@
   }
 
   // ------------------------------------------------------------ sign list (ASL-LEX coding + look-alikes)
-  function renderSignCard() {
+  // ------------------------------------------------------------ demo: what to sign
+  let demoColours = null;
+  try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { demoColours = null; }); } catch {}
+  const demoCols = () => {
+    if (!demoColours) {
+      const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+      demoColours = { bg: v('--panel'), body: v('--sunk'), bodyLine: v('--muted'), hand: v('--accent'), handFill: v('--accent-soft'),
+        hand2: v('--hand2'), hand2Fill: v('--unsure-soft'), base: v('--muted'), baseFill: v('--sunk'), path: v('--muted'),
+        target: v('--unsure'), contact: v('--unsure'), text: v('--fg') };
+    }
+    return demoColours;
+  };
+  const player = new DM.Player(() => [$('#demoCanvas'), $('#demoPip')], demoCols);
+  S.demoMode = null;
+  function demoFor(word) {
+    const hit = S.lex && X.lookup(S.lex, word);
+    const sign = hit && hit.sign && hit.sign.hs ? hit.sign : null;
+    const ex = S.examples.find(e => e.label === word && e.raw && e.raw.length >= 1629 * 4) || null;
+    return { sign, ex, plan: sign ? DM.plan(sign, { handed: settings.handed === 'left' ? 'left' : 'right' }) : null };
+  }
+  function renderDemo() {
+    const word = X.norm($('#teachWord').value), box = $('#demo');
+    if (!word) { box.hidden = true; player.clear(); syncPip(); return; }
+    const d = demoFor(word);
+    $('#demoVideo').href = `https://www.google.com/search?tbm=vid&q=${encodeURIComponent(`ASL sign "${word}"`)}`;
+    const modes = { taught: !!d.ex, diagram: !!d.plan };
+    // while teaching, show the reference diagram first; otherwise prefer a real taught example
+    const order = S.teach ? ['diagram', 'taught'] : ['taught', 'diagram'];
+    let mode = S.demoMode && modes[S.demoMode] ? S.demoMode : order.find(m => modes[m]) || null;
+    box.hidden = false;
+    for (const b of document.querySelectorAll('#demoModes button')) {
+      b.hidden = !modes[b.dataset.mode]; b.setAttribute('aria-pressed', String(b.dataset.mode === mode));
+    }
+    $('#demoCanvas').hidden = !mode;
+    const steps = $('#demoSteps'), note = $('#demoNote');
+    if (mode === 'diagram') {
+      player.showDiagram(d.plan);
+      steps.innerHTML = DM.caption(d.sign, d.plan, X.LOC[d.sign.loc]).map(t => `<li>${esc(t)}</li>`).join('');
+      note.textContent = 'Drawn from the ASL-LEX coding and shown like a mirror. It does not show palm direction or exactly which way the path goes, so check a real video if unsure.';
+    } else if (mode === 'taught') {
+      player.showReplay(d.ex);
+      steps.innerHTML = '';
+      note.textContent = `Replay of how ${d.ex.signer && d.ex.signer !== 'unnamed' ? d.ex.signer : 'it'} was taught on this device, shown like a mirror (hands and body landmarks).`;
+    } else {
+      player.clear(); steps.innerHTML = '';
+      note.textContent = 'No demo for this word yet. Once it has been taught here, a replay shows in this space. Open real videos to see it signed.';
+    }
+    syncPip();
+  }
+  function syncPip() {
+    const show = !!S.teach && !!player.mode && !$('#demo').hidden;
+    $('#demoPip').hidden = !show; $('#pipLabel').hidden = !show;
+  }
+  function renderSignCard() { renderCardText(); renderDemo(); }
+  function renderCardText() {
     const box = $('#signCard'), word = X.norm($('#teachWord').value);
     if (!word || !S.lex) { box.hidden = true; box.innerHTML = ''; return; }
     const hit = X.lookup(S.lex, word);
@@ -514,7 +570,8 @@
   $('#teachWord').addEventListener('keydown', e => { if (e.key === 'Enter' && !S.teach) startTeach(); });
   $('#suggest').addEventListener('click', e => { const w = e.target.dataset && e.target.dataset.word; if (w) { $('#teachWord').value = w; $('#teachWord').focus(); renderSignCard(); } });
   $('#signCard').addEventListener('click', e => { const w = e.target.dataset && e.target.dataset.word; if (w && !S.teach) { $('#teachWord').value = w; renderSignCard(); } });
-  $('#teachWord').addEventListener('input', renderSignCard);
+  $('#teachWord').addEventListener('input', () => { S.demoMode = null; renderSignCard(); });
+  $('#demoModes').addEventListener('click', e => { const m = e.target.dataset && e.target.dataset.mode; if (m) { S.demoMode = m; renderDemo(); } });
   $('#suggestSet').addEventListener('change', e => { settings.sugSet = e.target.value; saveSettings(); renderVocab(); });
   $('#vocab').addEventListener('click', async e => {
     const l = e.target.dataset && e.target.dataset.del; if (!l) return;
@@ -579,7 +636,7 @@
     teachStart(label, total) { $('#teachWord').value = label; $('#teachReps').value = total; S.source = 'camera'; if (!S.pipe) newPipe(); startTeach(); return !!S.teach; },
     endSentence() { S.lastWordAt = 0; return maybeEndSentence('idle'); },
     importPack, packExamples, runVideo, speedTest,
-    lexicon: () => S.lex, renderSignCard,
+    lexicon: () => S.lex, renderSignCard, demo: player,
   };
 
   // ------------------------------------------------------------ boot
