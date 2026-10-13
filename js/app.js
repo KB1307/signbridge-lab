@@ -166,7 +166,7 @@
     push(S.times.pipe, performance.now() - t0);
     push(S.frameTimes, clock(), 60);
     const flag = $('#sigflag'); flag.hidden = false;
-    flag.textContent = out.state === 'active' ? 'SIGNING' : 'RESTING'; flag.classList.toggle('on', out.state === 'active');
+    flag.textContent = out.state === 'active' ? 'Signing' : 'Resting'; flag.classList.toggle('on', out.state === 'active');
     if (S.teach) teachStep(out);
     else if (out.closed && S.source === 'camera') onSegment(out.closed, null);
     if (S.source === 'camera') maybeEndSentence(out.state);
@@ -393,7 +393,8 @@
   }
   function syncPip() {
     const show = !!S.teach && !!player.mode && !$('#demo').hidden;
-    $('#demoPip').hidden = !show; $('#pipLabel').hidden = !show;
+    $('#demoPip').hidden = !show; $('#pipLabel').hidden = !show; $('#pipBox').hidden = !show;
+    $('#stage').classList.toggle('has-pip', show);
   }
   function renderSignCard() { renderCardText(); renderDemo(); }
   function renderCardText() {

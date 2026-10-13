@@ -21,6 +21,6 @@ No video leaves the device; taught examples stay in the browser unless exported 
 Run locally with a webcam: `python3 serve.py`, then open http://localhost:8000.
 Check the sign list and demos: `node tests/lexicon.test.js` (gates L1-L5), `node tests/demo.test.js` (gates D1-D7).
 
-Vendored: MediaPipe Holistic (Apache-2.0), ONNX Runtime Web (MIT), Atkinson Hyperlegible and IBM Plex Mono (OFL-1.1).
+Vendored: MediaPipe Holistic (Apache-2.0), ONNX Runtime Web (MIT), Atkinson Hyperlegible, Bricolage Grotesque and IBM Plex Mono (OFL-1.1).
 Sign list (`data/lexicon.json`): ASL-LEX 2.0 phonology and frequency (Sehyr, Caselli, Cohen-Goldberg & Emmorey 2021,
 CC BY-NC 4.0, https://asl-lex.org) and WLASL v0.3 video counts (Li et al. 2020, C-UDA). Non-commercial use only.
