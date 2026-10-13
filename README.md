@@ -14,6 +14,10 @@ No video leaves the device; taught examples stay in the browser unless exported 
   taught on the device, a replay of the taught example's hand and body movement. While recording, the demo
   plays in a "Copy this" window on the camera. A "Real videos" link opens a video search for the word. The
   diagram does not show palm direction or which way a path goes.
+- **Recognition model** (Settings): load a trained SignBridge model file (`.sbm`) to recognise its signs
+  without teaching them. The file is read and kept on this device only (browser storage) and is never
+  uploaded; this repository ships no trained model. Taught signs still win when they match confidently.
+  Models are trained offline by `lab/tools/train_signmodel.py` on features from this same pipeline.
 - **Video**: recognise a recorded clip.
 - **Data**: export consented landmark recordings for training.
 - **Device**: landmark speed and a speed test of the 4.5M-parameter network shape (random weights).

@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   const $ = s => document.querySelector(s);
-  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo;
+  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo, SM = window.SBSignModel;
   const D = F.D, W = L.N_RAW * 3;
 
   // ------------------------------------------------------------ settings (per-viewer convenience)
@@ -36,13 +36,28 @@
     };
   })();
 
+  // ------------------------------------------------------------ model file storage (this browser only)
+  const modelStore = (() => {
+    const open = () => new Promise(res => {
+      try {
+        const r = indexedDB.open('signbridge-models', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('files');
+        r.onsuccess = () => res(r.result); r.onerror = () => res(null);
+      } catch { res(null); }
+    });
+    const db = open();
+    const op = async (mode, fn) => { const d = await db; if (!d) return null;
+      return new Promise((res, rej) => { const t = d.transaction('files', mode), q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); }); };
+    return { get: () => op('readonly', s => s.get('current')), put: v => op('readwrite', s => s.put(v, 'current')), clear: () => op('readwrite', s => s.delete('current')) };
+  })();
+
   // ------------------------------------------------------------ state
   const S = {
     holistic: null, ready: false, running: false, source: null, stream: null,
     video: document.createElement('video'), aspect: 4 / 3, lastRes: null,
     pipe: null, model: new R.FewShot({ tauSlack: settings.sens }), examples: [],
     times: { lm: [], pipe: [] }, frameTimes: [], presence: [], light: null,
-    teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null, lex: null, lastStats: null,
+    teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null, lex: null, lastStats: null, signModel: null,
   };
   S.video.playsInline = true; S.video.muted = true;
   const canvas = $('#view'), ctx = canvas.getContext('2d');
@@ -174,9 +189,17 @@
   }
 
   // ------------------------------------------------------------ captions
+  // Taught signs win when they match confidently; otherwise the loaded model answers.
+  function recognise(seg, fps) {
+    const taught = S.model.ready ? S.model.spot(seg.frames) : [];
+    if (taught.some(r => r.status === 'ok') || !S.signModel) return taught;
+    let m = null;
+    try { m = S.signModel.classifySegment(seg, { fps: fps || 15, aspect: S.aspect }); } catch (e) { console.warn('model', e); }
+    return m ? [{ start: 0, end: seg.frames.length - 1, label: m.label, status: m.status, p: m.p, source: 'model' }] : taught;
+  }
   function onSegment(seg, at) {
-    if (!S.model.ready) { toast(`Sign seen (${seg.frames.length} frames). Teach some signs to see words.`); return []; }
-    const rs = S.model.spot(seg.frames);
+    if (!S.model.ready && !S.signModel) { toast(`Sign seen (${seg.frames.length} frames). Teach some signs or load a model to see words.`); return []; }
+    const rs = recognise(seg, fpsNow());
     for (const r of rs) {
       S.words.push({ text: R.wordText(r), status: r.status, label: r.label, at });
       if (settings.speak === 'word' && r.status === 'ok') say(r.label);
@@ -200,7 +223,10 @@
   function renderCaption() {
     $('#capPast').innerHTML = S.past.map(ws => `<div>${wordsHtml(ws)}</div>`).join('');
     $('#capNow').innerHTML = S.words.length ? wordsHtml(S.words) : '';
-    $('#capMode').textContent = S.model.ready ? `${S.model.labels.length} signs known` : 'Teach a few signs to start captions';
+    const nModel = S.signModel ? S.signModel.size : 0, nTaught = S.model.ready ? S.model.labels.length : 0;
+    $('#capMode').textContent = nModel || nTaught
+      ? [nModel ? `${nModel} signs from the model` : '', nTaught ? `${nTaught} taught` : ''].filter(Boolean).join(' + ')
+      : 'Teach a few signs or load a model to start captions';
   }
   function say(text) {
     try {
@@ -342,6 +368,39 @@
   }
 
   // ------------------------------------------------------------ sign list (ASL-LEX coding + look-alikes)
+  // ------------------------------------------------------------ recognition model (.sbm)
+  function useModel(buf, name) {
+    const m = SM.parse(buf);
+    S.signModel = m; renderModel(name); renderCaption(); renderSignCard();
+    return m;
+  }
+  function renderModel(fileName) {
+    const m = S.signModel, st = $('#modelStatus'), note = $('#modelNote');
+    $('#modelRemove').hidden = !m;
+    if (!m) {
+      st.textContent = 'No model loaded. Captions use only the signs you teach. Load a SignBridge model file (.sbm) to recognise its signs without teaching them.';
+      note.hidden = true; return;
+    }
+    const mt = m.h.metrics || {};
+    st.innerHTML = `<b>${esc(m.h.name || fileName || 'Model')}</b> · ${m.size} signs` + (mt.test_top1 !== undefined
+      ? `<br><span class="metrics">Right first time for ${Math.round(mt.test_top1 * 100)}% of signs by ${mt.test_signers} people it never saw` +
+        ` (${Math.round(mt.test_top1_ci95[0] * 100)}–${Math.round(mt.test_top1_ci95[1] * 100)}%); in its top 5 for ${Math.round(mt.test_top5 * 100)}%.</span>` : '');
+    note.hidden = !m.h.trained_on; note.textContent = m.h.trained_on ? `Kept on this device only. ${m.h.trained_on}` : '';
+  }
+  $('#modelFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const buf = await f.arrayBuffer();
+      const m = useModel(buf, f.name);
+      try { await modelStore.put({ name: f.name, buf }); } catch {}
+      toast(`Loaded ${m.size} signs.`);
+    } catch (err) { toast(err.message || 'Could not read that model file.'); }
+  });
+  $('#modelRemove').addEventListener('click', async () => {
+    S.signModel = null; try { await modelStore.clear(); } catch {}
+    renderModel(); renderCaption(); renderSignCard(); toast('Model removed from this device.');
+  });
+
   // ------------------------------------------------------------ demo: what to sign
   let demoColours = null;
   try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { demoColours = null; }); } catch {}
@@ -413,8 +472,10 @@
     const confHtml = conf.length
       ? `<span class="warn">Easy to confuse with ${conf.map(c => `<button type="button" data-word="${esc(c.key)}">${esc(c.key)}</button> (${esc(c.why)} only${c.taught ? ', taught' : ''})`).join(', ')}</span>`
       : '';
+    const inModel = S.signModel && S.signModel.words.some(w => X.norm(w) === hit.key);
     box.hidden = false;
     box.innerHTML = `<span><b>${esc(hit.key)}</b>${facts ? ` <span class="muted small">${esc(facts)}</span>` : ''}</span>`
+      + (inModel ? '<span class="inmodel">✓ The loaded model recognises this sign</span>' : '')
       + (desc ? `<span class="code">${esc(desc)}</span>` : '<span class="muted small">No ASL-LEX coding for this word (several variants share the name).</span>')
       + confHtml;
   }
@@ -453,8 +514,8 @@
     });
     const fmt = s => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`;
     const addRes = (seg) => {
-      if (!S.model.ready) { results.push({ t: seg.start / fps, text: `sign (${seg.frames.length} frames)`, status: 'reject' }); return; }
-      for (const r of S.model.spot(seg.frames)) results.push({ t: (seg.start + r.start) / fps, text: R.wordText(r), status: r.status });
+      if (!S.model.ready && !S.signModel) { results.push({ t: seg.start / fps, text: `sign (${seg.frames.length} frames)`, status: 'reject' }); return; }
+      for (const r of recognise(seg, fps)) results.push({ t: (seg.start + r.start) / fps, text: R.wordText(r), status: r.status });
       $('#videoResults').innerHTML = results.map(r => `<li><span class="ts">${fmt(r.t)}</span><span class="w ${r.status === 'ok' ? '' : r.status === 'uncertain' ? 'unsure' : 'reject'}">${esc(r.text)}</span></li>`).join('');
     };
     for (let i = 0; i < total && !job.cancel; i++) {
@@ -638,12 +699,14 @@
     endSentence() { S.lastWordAt = 0; return maybeEndSentence('idle'); },
     importPack, packExamples, runVideo, speedTest,
     lexicon: () => S.lex, renderSignCard, demo: player,
+    loadModel: (buf, name) => useModel(buf, name), recognise,
   };
 
   // ------------------------------------------------------------ boot
   (async () => {
     renderVocab(null); renderCaption(); renderData();
     loadLexicon().then(() => { window.SBLab.lexReady = true; });
+    modelStore.get().then(v => { if (v && v.buf) { try { useModel(v.buf, v.name); } catch {} } }).catch(() => {}).finally(() => { window.SBLab.modelChecked = true; });
     S.examples = await store.all().catch(() => []);
     if (S.examples.length) refit();
     if (!window.isSecureContext || !navigator.mediaDevices) {
