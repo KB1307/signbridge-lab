@@ -165,6 +165,35 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .results { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-variant-numeric: tabular-nums; }
 .results li { display: flex; gap: 12px; }
 .results .ts { font-size: .86rem; color: var(--muted); min-width: 4.5em; }
+/* childcare */
+.carehead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; cursor: pointer; }
+.switch input { appearance: none; width: 46px; height: 28px; border-radius: 999px; background: var(--line); position: relative; cursor: pointer; transition: background .15s; flex: none; margin: 0; }
+.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--panel); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .15s; }
+.switch input:checked { background: var(--accent); }
+.switch input:checked::after { transform: translateX(18px); }
+.needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.needs button { border: 0; border-radius: 16px; padding: 14px 8px 12px; min-height: 64px; cursor: pointer; font: 700 1rem/1.15 var(--f-body); color: var(--fg); background: var(--sunk); box-shadow: inset 0 0 0 1px var(--line); }
+.needs button.lit { background: var(--accent); color: var(--accent-ink); box-shadow: 0 8px 22px -10px var(--accent); }
+@media (hover: hover) { .needs button:hover { box-shadow: inset 0 0 0 2px var(--accent); } }
+.needs button small { display: block; font-weight: 400; font-size: .74rem; color: var(--muted); margin-top: 3px; }
+.needs button.lit small { color: inherit; opacity: .8; }
+.subhead { font: 650 1.02rem/1.2 var(--f-display); margin: 4px 0 0; }
+.cgroup { display: grid; gap: 7px; }
+.cgroup > span { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.cwords { display: flex; flex-wrap: wrap; gap: 6px; }
+.cwords button { border: 0; background: var(--sunk); box-shadow: inset 0 0 0 1px var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: .92rem; color: var(--fg); }
+.cwords button.known { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ok) 55%, transparent); }
+.cwords button.known::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+.cwords button.taught { box-shadow: inset 0 0 0 1.5px var(--hand2); }
+input[type="search"] { background: var(--sunk); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 13px; min-height: 46px; width: 100%; }
+.confirmbar { display: grid; gap: 8px; background: var(--panel); border-radius: 18px; padding: 12px; box-shadow: var(--lift); }
+.confirmbar > span { font-weight: 700; font-size: .92rem; color: var(--muted); }
+.confirmbar .opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.confirmbar .opts button { border: 0; border-radius: 14px; padding: 10px 16px; min-height: 52px; font: 700 1.1rem/1 var(--f-body); cursor: pointer; background: var(--sunk); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+.confirmbar .opts button.first { background: var(--accent); color: var(--accent-ink); box-shadow: none; }
+.confirmbar .opts button.none { font-size: .92rem; color: var(--muted); }
+.stage.care .surtitles .now { font-size: clamp(2rem, 9vw, 3.2rem); }
 .toast { position: fixed; z-index: 10; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 11px 18px; border-radius: 14px; max-width: min(90vw, 480px); box-shadow: 0 14px 34px -12px rgba(0,0,0,.45); font-weight: 700; }
 @media (prefers-reduced-motion: no-preference) {
   .sigflag { transition: background .2s, color .2s; }
@@ -203,6 +232,10 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
         <div class="now" id="capNow"></div>
       </div>
     </div>
+    <div class="confirmbar" id="careConfirm" hidden aria-live="polite">
+      <span id="careConfirmQ">Which sign was it?</span>
+      <div class="opts" id="careConfirmOpts"></div>
+    </div>
     <div class="stagebar">
       <div class="chips" id="chips" aria-live="polite"></div>
       <button class="btn" id="flipBtn" hidden>Switch camera</button>
@@ -213,6 +246,7 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
   <section class="panel" aria-label="Tools">
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected="true" data-tab="teach">Teach</button>
+      <button role="tab" aria-selected="false" data-tab="care">Childcare</button>
       <button role="tab" aria-selected="false" data-tab="video">Video</button>
       <button role="tab" aria-selected="false" data-tab="data">Data</button>
       <button role="tab" aria-selected="false" data-tab="device">Device</button>
@@ -248,6 +282,33 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
       <ul class="vocab" id="vocab"></ul>
       <div class="stat" id="selfTest" hidden></div>
       <p class="credit" id="lexCredit" hidden></p>
+    </div>
+
+    <div class="tabpane" data-pane="care" hidden>
+      <div class="carehead">
+        <h2>Childcare</h2>
+        <label class="switch"><input type="checkbox" id="careMode" role="switch"><span>Childcare mode</span></label>
+      </div>
+      <p class="muted small" id="careIntro">For a child's first signs. Childcare mode limits recognition to the words below, makes captions larger, says each word aloud and asks you to confirm any word it is unsure of. Children often sign their own way: teach a child's version of a word and it is recognised for that child first.</p>
+      <div class="modelbox" id="careModelBox">
+        <div class="field">
+          <label>Childcare model</label>
+          <span class="help" id="careModelStatus">No childcare model loaded.</span>
+        </div>
+        <div class="row">
+          <label class="btn primary" for="careModelFile">Load childcare model</label>
+          <input type="file" id="careModelFile" accept=".sbm,application/octet-stream" hidden>
+          <button class="btn danger" id="careModelRemove" hidden>Remove</button>
+        </div>
+        <p class="note small muted" id="careModelNote" hidden></p>
+      </div>
+      <h3 class="subhead">Needs</h3>
+      <p class="muted small">Tap to say it aloud. A need lights up when it is signed.</p>
+      <div class="needs" id="careNeeds"></div>
+      <h3 class="subhead">Words</h3>
+      <input type="search" id="careSearch" placeholder="Find a word" aria-label="Find a childcare word" autocomplete="off">
+      <p class="muted small" id="careLegend"></p>
+      <div id="careWords" style="display:grid;gap:14px"></div>
     </div>
 
     <div class="tabpane" data-pane="video" hidden>
@@ -347,6 +408,7 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 <script src="js/lexicon.js"></script>
 <script src="js/demo.js"></script>
 <script src="js/signmodel.js"></script>
+<script src="js/childcare.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

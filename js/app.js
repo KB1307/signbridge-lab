@@ -3,11 +3,11 @@
 (function () {
   'use strict';
   const $ = s => document.querySelector(s);
-  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo, SM = window.SBSignModel;
+  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo, SM = window.SBSignModel, CC = window.SBChildcare;
   const D = F.D, W = L.N_RAW * 3;
 
   // ------------------------------------------------------------ settings (per-viewer convenience)
-  const DEFAULTS = { restY: 1.0, sens: 1.25, handed: 'auto', speak: 'sentence', fast: '1', signer: '', facing: 'user', sugSet: 'starter' };
+  const DEFAULTS = { restY: 1.0, sens: 1.25, handed: 'auto', speak: 'sentence', fast: '1', signer: '', facing: 'user', sugSet: 'starter', care: false };
   const settings = Object.assign({}, DEFAULTS, (() => { try { return JSON.parse(localStorage.getItem('sb-lab-settings') || '{}'); } catch { return {}; } })());
   const saveSettings = () => { try { localStorage.setItem('sb-lab-settings', JSON.stringify(settings)); } catch {} };
 
@@ -48,7 +48,9 @@
     const db = open();
     const op = async (mode, fn) => { const d = await db; if (!d) return null;
       return new Promise((res, rej) => { const t = d.transaction('files', mode), q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); }); };
-    return { get: () => op('readonly', s => s.get('current')), put: v => op('readwrite', s => s.put(v, 'current')), clear: () => op('readwrite', s => s.delete('current')) };
+    // slots: 'current' = general model, 'childcare' = childcare model
+    return { get: (k = 'current') => op('readonly', s => s.get(k)), put: (v, k = 'current') => op('readwrite', s => s.put(v, k)),
+             clear: (k = 'current') => op('readwrite', s => s.delete(k)) };
   })();
 
   // ------------------------------------------------------------ state
@@ -57,7 +59,7 @@
     video: document.createElement('video'), aspect: 4 / 3, lastRes: null,
     pipe: null, model: new R.FewShot({ tauSlack: settings.sens }), examples: [],
     times: { lm: [], pipe: [] }, frameTimes: [], presence: [], light: null,
-    teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null, lex: null, lastStats: null, signModel: null,
+    teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null, lex: null, lastStats: null, signModel: null, careModel: null, careAllow: null, pending: null,
   };
   S.video.playsInline = true; S.video.muted = true;
   const canvas = $('#view'), ctx = canvas.getContext('2d');
@@ -190,23 +192,89 @@
 
   // ------------------------------------------------------------ captions
   // Taught signs win when they match confidently; otherwise the loaded model answers.
+  // In childcare mode the childcare model answers; without one, the general model is limited to childcare words.
+  function careAllowFor(m) {
+    if (!m) return null;
+    if (!S.careAllow || S.careAllow.model !== m) S.careAllow = { model: m, set: CC.allowed(m.words) };
+    return S.careAllow.set;
+  }
+  function activeModel() {
+    if (!settings.care) return { model: S.signModel, allow: null };
+    if (S.careModel) return { model: S.careModel, allow: null };
+    return { model: S.signModel, allow: careAllowFor(S.signModel) };
+  }
+  const careWord = w => { const e = settings.care && CC.entry(w); return e ? e.word : w; };
   function recognise(seg, fps) {
     const taught = S.model.ready ? S.model.spot(seg.frames) : [];
-    if (taught.some(r => r.status === 'ok') || !S.signModel) return taught;
+    const { model, allow } = activeModel();
+    if (taught.some(r => r.status === 'ok') || !model || (allow && !allow.size)) return taught;
     let m = null;
-    try { m = S.signModel.classifySegment(seg, { fps: fps || 15, aspect: S.aspect }); } catch (e) { console.warn('model', e); }
-    return m ? [{ start: 0, end: seg.frames.length - 1, label: m.label, status: m.status, p: m.p, source: 'model' }] : taught;
+    try { m = model.classifySegment(seg, { fps: fps || 15, aspect: S.aspect, allow }); } catch (e) { console.warn('model', e); }
+    return m ? [{ start: 0, end: seg.frames.length - 1, label: careWord(m.label), status: m.status, p: m.p, source: 'model',
+                  top: m.top.map(t => careWord(t.word)) }] : taught;
   }
   function onSegment(seg, at) {
     if (!S.model.ready && !S.signModel) { toast(`Sign seen (${seg.frames.length} frames). Teach some signs or load a model to see words.`); return []; }
     const rs = recognise(seg, fpsNow());
+    const perWord = settings.speak === 'word' || (settings.care && settings.speak !== 'off');
     for (const r of rs) {
       S.words.push({ text: R.wordText(r), status: r.status, label: r.label, at });
-      if (settings.speak === 'word' && r.status === 'ok') say(r.label);
+      if (perWord && r.status === 'ok') say(r.label);
+      if (r.status === 'ok') lightNeed(r.label);
+      if (settings.care && r.top) askConfirm(S.words.length - 1, r);
     }
     S.lastWordAt = clock();
     renderCaption();
     return rs;
+  }
+  // ---- childcare: one-tap confirm, needs board
+  function askConfirm(i, r) {
+    const opts = [...new Set(r.top)].slice(0, 3);
+    S.pending = { i, opts };
+    $('#careConfirmQ').textContent = r.status === 'ok' ? 'Signed. Tap another word if it was something else.' : 'Not sure. Which sign was it?';
+    $('#careConfirmOpts').innerHTML = opts.map((w, k) => `<button type="button" class="${k ? '' : 'first'}" data-pick="${esc(w)}">${esc(w)}</button>`).join('')
+      + '<button type="button" class="none" data-pick="">None of these</button>';
+    $('#careConfirm').hidden = false;
+  }
+  function pickConfirm(word) {
+    const p = S.pending; if (!p) return;
+    const w = S.words[p.i];
+    if (w) {
+      if (word) { const changed = w.label !== word || w.status !== 'ok'; Object.assign(w, { text: word, label: word, status: 'ok' }); if (changed) { say(word); lightNeed(word); } }
+      else S.words.splice(p.i, 1);
+    }
+    S.pending = null; $('#careConfirm').hidden = true; renderCaption();
+  }
+  function lightNeed(word) {
+    const e = CC.entry(word); if (!e || !CC.NEEDS.includes(e.key)) return;
+    const b = document.querySelector(`#careNeeds button[data-need="${e.key}"]`); if (!b) return;
+    b.classList.add('lit'); clearTimeout(b._t); b._t = setTimeout(() => b.classList.remove('lit'), 5000);
+  }
+  function renderNeeds() {
+    $('#careNeeds').innerHTML = CC.NEEDS.map(k => { const e = CC.entry(k);
+      return `<button type="button" data-need="${esc(k)}">${esc(e.word)}<small>${esc(e.catLabel)}</small></button>`; }).join('');
+  }
+  function careKnown() {
+    const { model, allow } = (() => { const was = settings.care; settings.care = true; const a = activeModel(); settings.care = was; return a; })();
+    const known = new Set();
+    if (model) model.words.forEach((w, i) => { if (!allow || allow.has(i)) { const e = CC.entry(w); if (e) known.add(e.key); } });
+    return known;
+  }
+  function renderCareWords() {
+    const known = careKnown(), taught = new Set(S.examples.map(e => (CC.entry(e.label) || {}).key).filter(Boolean));
+    const groups = CC.grouped($('#careSearch').value);
+    $('#careWords').innerHTML = groups.length ? groups.map(g => `<div class="cgroup"><span>${esc(g.label)}</span><div class="cwords">${
+      g.words.map(w => `<button type="button" data-cword="${esc(w.word)}" class="${known.has(w.key) ? 'known' : ''} ${taught.has(w.key) ? 'taught' : ''}">${esc(w.word)}</button>`).join('')}</div></div>`).join('')
+      : '<p class="muted small">No childcare word matches that.</p>';
+    const src = S.careModel ? 'the childcare model' : S.signModel ? 'the general model' : null;
+    $('#careLegend').innerHTML = src ? `<b>✓</b> = recognised by ${src} (${known.size} of ${CC.size}). Tap a word to see it and teach a child's own version.`
+      : `${CC.size} words. Load a childcare model above, or tap a word to see it and teach it.`;
+  }
+  function setCare(on) {
+    settings.care = !!on; saveSettings();
+    $('#careMode').checked = settings.care; $('#stage').classList.toggle('care', settings.care);
+    if (!settings.care) { S.pending = null; $('#careConfirm').hidden = true; }
+    renderCaption();
   }
   function maybeEndSentence(state) {
     if (!S.words.length || state !== 'idle' || clock() - S.lastWordAt < 1800) return;
@@ -214,7 +282,7 @@
     const spoken = R.sentenceText(S.words.filter(w => w.status === 'ok').map(w => w.label));
     S.past.push(S.words); if (S.past.length > 3) S.past.shift();
     S.words = [];
-    if (settings.speak === 'sentence' && spoken) say(spoken);
+    if (settings.speak === 'sentence' && !settings.care && spoken) say(spoken);
     renderCaption();
     return text;
   }
@@ -223,7 +291,14 @@
   function renderCaption() {
     $('#capPast').innerHTML = S.past.map(ws => `<div>${wordsHtml(ws)}</div>`).join('');
     $('#capNow').innerHTML = S.words.length ? wordsHtml(S.words) : '';
-    const nModel = S.signModel ? S.signModel.size : 0, nTaught = S.model.ready ? S.model.labels.length : 0;
+    const nTaught = S.model.ready ? S.model.labels.length : 0;
+    if (settings.care) {
+      const n = careKnown().size;
+      $('#capMode').textContent = n || nTaught ? ['Childcare', n ? `${n} words` : '', nTaught ? `${nTaught} taught` : ''].filter(Boolean).join(' · ')
+        : 'Childcare mode: load a childcare model or teach signs';
+      return;
+    }
+    const nModel = S.signModel ? S.signModel.size : 0;
     $('#capMode').textContent = nModel || nTaught
       ? [nModel ? `${nModel} signs from the model` : '', nTaught ? `${nTaught} taught` : ''].filter(Boolean).join(' + ')
       : 'Teach a few signs or load a model to start captions';
@@ -328,7 +403,7 @@
       const t0 = performance.now();
       const stats = S.model.fit(S.examples.map(e => ({ label: e.label, frames: unflat(e.frames, D) })));
       S.fitMs = performance.now() - t0;
-      renderVocab(stats); renderSignCard(); renderCaption(); renderData();
+      renderVocab(stats); renderSignCard(); renderCaption(); renderData(); renderCareWords();
     }, 30);
   }
   function renderVocab(stats) {
@@ -371,8 +446,30 @@
   // ------------------------------------------------------------ recognition model (.sbm)
   function useModel(buf, name) {
     const m = SM.parse(buf);
-    S.signModel = m; renderModel(name); renderCaption(); renderSignCard();
+    S.signModel = m; renderModel(name); renderCaption(); renderSignCard(); renderCareWords();
     return m;
+  }
+  function useCareModel(buf, name) {
+    const m = SM.parse(buf);
+    S.careModel = m; renderCareModel(name); renderCaption(); renderCareWords();
+    return m;
+  }
+  const modelLine = (m, fileName) => {
+    const mt = m.h.metrics || {};
+    return `<b>${esc(m.h.name || fileName || 'Model')}</b> · ${m.size} signs` + (mt.test_top1 !== undefined
+      ? `<br><span class="metrics">Right first time for ${Math.round(mt.test_top1 * 100)}% of signs by ${mt.test_signers} people it never saw` +
+        ` (${Math.round(mt.test_top1_ci95[0] * 100)}–${Math.round(mt.test_top1_ci95[1] * 100)}%); in its top 5 for ${Math.round(mt.test_top5 * 100)}%.</span>` : '');
+  };
+  function renderCareModel(fileName) {
+    const m = S.careModel, st = $('#careModelStatus'), note = $('#careModelNote');
+    $('#careModelRemove').hidden = !m;
+    if (!m) {
+      st.textContent = S.signModel ? 'No childcare model loaded. Childcare mode uses the general model, limited to childcare words.'
+        : 'No childcare model loaded. Load one (.sbm), or teach signs: childcare mode then uses what you teach.';
+      note.hidden = true; return;
+    }
+    st.innerHTML = modelLine(m, fileName);
+    note.hidden = !m.h.trained_on; note.textContent = m.h.trained_on ? `Kept on this device only. ${m.h.trained_on}` : '';
   }
   function renderModel(fileName) {
     const m = S.signModel, st = $('#modelStatus'), note = $('#modelNote');
@@ -381,24 +478,38 @@
       st.textContent = 'No model loaded. Captions use only the signs you teach. Load a SignBridge model file (.sbm) to recognise its signs without teaching them.';
       note.hidden = true; return;
     }
-    const mt = m.h.metrics || {};
-    st.innerHTML = `<b>${esc(m.h.name || fileName || 'Model')}</b> · ${m.size} signs` + (mt.test_top1 !== undefined
-      ? `<br><span class="metrics">Right first time for ${Math.round(mt.test_top1 * 100)}% of signs by ${mt.test_signers} people it never saw` +
-        ` (${Math.round(mt.test_top1_ci95[0] * 100)}–${Math.round(mt.test_top1_ci95[1] * 100)}%); in its top 5 for ${Math.round(mt.test_top5 * 100)}%.</span>` : '');
+    st.innerHTML = modelLine(m, fileName);
     note.hidden = !m.h.trained_on; note.textContent = m.h.trained_on ? `Kept on this device only. ${m.h.trained_on}` : '';
   }
   $('#modelFile').addEventListener('change', async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     try {
       const buf = await f.arrayBuffer();
+      if (SM.parse(buf).h.section === 'childcare') {         // a childcare model goes to its own slot
+        const m = useCareModel(buf, f.name);
+        try { await modelStore.put({ name: f.name, buf }, 'childcare'); } catch {}
+        toast(`That is a childcare model: loaded ${m.size} signs into the Childcare section.`); return;
+      }
       const m = useModel(buf, f.name);
       try { await modelStore.put({ name: f.name, buf }); } catch {}
       toast(`Loaded ${m.size} signs.`);
     } catch (err) { toast(err.message || 'Could not read that model file.'); }
   });
+  $('#careModelFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const buf = await f.arrayBuffer(), m = useCareModel(buf, f.name);
+      try { await modelStore.put({ name: f.name, buf }, 'childcare'); } catch {}
+      toast(`Loaded ${m.size} childcare signs.`);
+    } catch (err) { toast(err.message || 'Could not read that model file.'); }
+  });
+  $('#careModelRemove').addEventListener('click', async () => {
+    S.careModel = null; try { await modelStore.clear('childcare'); } catch {}
+    renderCareModel(); renderCaption(); renderCareWords(); toast('Childcare model removed from this device.');
+  });
   $('#modelRemove').addEventListener('click', async () => {
     S.signModel = null; try { await modelStore.clear(); } catch {}
-    renderModel(); renderCaption(); renderSignCard(); toast('Model removed from this device.');
+    renderModel(); renderCaption(); renderSignCard(); renderCareModel(); renderCareWords(); toast('Model removed from this device.');
   });
 
   // ------------------------------------------------------------ demo: what to sign
@@ -626,7 +737,7 @@
   }
   document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => selectTab(b.dataset.tab)));
   $('#startBtn').addEventListener('click', startCamera);
-  $('#stopBtn').addEventListener('click', () => { stopAll(); $('#cover').hidden = false; $('#startBtn').textContent = 'Start camera'; $('#flipBtn').hidden = $('#stopBtn').hidden = true; $('#sigflag').hidden = true; });
+  $('#stopBtn').addEventListener('click', () => { S.pending = null; $('#careConfirm').hidden = true; stopAll(); $('#cover').hidden = false; $('#startBtn').textContent = 'Start camera'; $('#flipBtn').hidden = $('#stopBtn').hidden = true; $('#sigflag').hidden = true; });
   $('#flipBtn').addEventListener('click', () => { settings.facing = settings.facing === 'user' ? 'environment' : 'user'; saveSettings(); startCamera(); });
   $('#teachBtn').addEventListener('click', () => (S.teach ? endTeach('Recording cancelled.') : startTeach()));
   $('#teachWord').addEventListener('keydown', e => { if (e.key === 'Enter' && !S.teach) startTeach(); });
@@ -661,6 +772,19 @@
   $('#clearNo').addEventListener('click', () => { $('#clearConfirm').hidden = true; });
   $('#clearYes').addEventListener('click', async () => { await store.clear(); S.examples = []; refit(); $('#clearConfirm').hidden = true; toast('All examples deleted.'); });
   $('#speedBtn').addEventListener('click', speedTest);
+  $('#careMode').addEventListener('change', e => setCare(e.target.checked));
+  $('#careSearch').addEventListener('input', renderCareWords);
+  $('#careWords').addEventListener('click', e => {
+    const w = e.target.dataset && e.target.dataset.cword; if (!w || S.teach) return;
+    $('#teachWord').value = w; S.demoMode = null; selectTab('teach'); renderSignCard();
+  });
+  $('#careNeeds').addEventListener('click', e => {
+    const b = e.target.closest('button[data-need]'); if (!b) return;
+    const word = CC.entry(b.dataset.need).word;
+    say(word); lightNeed(word);
+    S.words.push({ text: word, status: 'ok', label: word, at: null, tapped: true }); S.lastWordAt = clock(); renderCaption();
+  });
+  $('#careConfirmOpts').addEventListener('click', e => { const b = e.target.closest('button[data-pick]'); if (b) pickConfirm(b.dataset.pick); });
 
   const bindRange = (id, key, fmt, after) => {
     const el = $(id), out = $(id + 'Val');
@@ -700,13 +824,18 @@
     importPack, packExamples, runVideo, speedTest,
     lexicon: () => S.lex, renderSignCard, demo: player,
     loadModel: (buf, name) => useModel(buf, name), recognise,
+    loadCareModel: (buf, name) => useCareModel(buf, name), setCare, pickConfirm, careKnown: () => careKnown(),
   };
 
   // ------------------------------------------------------------ boot
   (async () => {
     renderVocab(null); renderCaption(); renderData();
     loadLexicon().then(() => { window.SBLab.lexReady = true; });
-    modelStore.get().then(v => { if (v && v.buf) { try { useModel(v.buf, v.name); } catch {} } }).catch(() => {}).finally(() => { window.SBLab.modelChecked = true; });
+    renderNeeds(); renderCareModel(); renderCareWords(); setCare(settings.care);
+    Promise.all([
+      modelStore.get().then(v => { if (v && v.buf) { try { useModel(v.buf, v.name); } catch {} } }).catch(() => {}),
+      modelStore.get('childcare').then(v => { if (v && v.buf) { try { useCareModel(v.buf, v.name); } catch {} } }).catch(() => {}),
+    ]).finally(() => { renderCareModel(); window.SBLab.modelChecked = true; });
     S.examples = await store.all().catch(() => []);
     if (S.examples.length) refit();
     if (!window.isSecureContext || !navigator.mediaDevices) {

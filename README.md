@@ -18,6 +18,13 @@ No video leaves the device; taught examples stay in the browser unless exported 
   without teaching them. The file is read and kept on this device only (browser storage) and is never
   uploaded; this repository ships no trained model. Taught signs still win when they match confidently.
   Models are trained offline by `lab/tools/train_signmodel.py` on features from this same pipeline.
+  A model file may hold several networks whose answers are averaged (an ensemble).
+- **Childcare**: a separate section for a child's first signs: 266 child and care words in 12 groups, a
+  needs board (hurt, potty, hungry, thirsty, sleepy, sick, more, finished, help, wait, mom, dad) that speaks
+  a word when tapped and lights up when it is signed, and a childcare mode that limits recognition to these
+  words, enlarges captions, says each word and offers a one-tap confirm (the top three guesses plus "None").
+  A childcare model has its own slot; without one, the general model is limited to the childcare words.
+  Children often sign their own way, so a child's version of a word can be taught and is matched first.
 - **Video**: recognise a recorded clip.
 - **Data**: export consented landmark recordings for training.
 - **Device**: landmark speed and a speed test of the 4.5M-parameter network shape (random weights).

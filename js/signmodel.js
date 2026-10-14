@@ -29,6 +29,18 @@
     }
     for (const k of ['labels', 'L', 'D', 'C', 'K', 'kernel', 'blocks']) if (header[k] === undefined) throw new Error(`Model header is missing ${k}.`);
     if (header.labels.length !== header.K) throw new Error('Model labels do not match its size.');
+    if (Array.isArray(header.members) && header.members.length) {       // several networks, probabilities averaged
+      const members = header.members.map(mh => {
+        const Tm = {};
+        for (const [name, [off, shape]] of Object.entries(mh.tensors)) {
+          const n = shape.reduce((a, b) => a * b, 1);
+          if (off + n > blob.length) throw new Error(`Model file is truncated (${mh.name || 'member'} ${name}).`);
+          Tm[name] = blob.subarray(off, off + n);
+        }
+        return new Model(Object.assign({}, header, mh, { members: undefined }), Tm);
+      });
+      return new Ensemble(header, members);
+    }
     return new Model(header, T);
   }
 
@@ -106,27 +118,56 @@
       return out;
     }
 
-    predict(rows, topk = 5) {
+    // allow: optional Set of class indices; the softmax is then taken over those classes only
+    // (limiting a model to a smaller vocabulary, e.g. the childcare words).
+    predict(rows, topk = 5, allow = null) {
       const lg = this.logits(rows), K = lg.length;
-      let m = -Infinity; for (let k = 0; k < K; k++) if (lg[k] > m) m = lg[k];
-      let s = 0; const p = new Float32Array(K); for (let k = 0; k < K; k++) { p[k] = Math.exp(lg[k] - m); s += p[k]; }
+      const ok = k => !allow || allow.has(k);
+      let m = -Infinity; for (let k = 0; k < K; k++) if (ok(k) && lg[k] > m) m = lg[k];
+      let s = 0; const p = new Float32Array(K); for (let k = 0; k < K; k++) { p[k] = ok(k) ? Math.exp(lg[k] - m) : 0; s += p[k]; }
       for (let k = 0; k < K; k++) p[k] /= s;
-      const idx = [...p.keys()].sort((a, b) => p[b] - p[a]).slice(0, topk);
+      const idx = [...p.keys()].filter(ok).sort((a, b) => p[b] - p[a]).slice(0, topk);
       return idx.map(i => ({ index: i, label: this.labels[i], word: this.words[i], p: p[i] }));
     }
 
-    // A closed Lab segment -> one caption word. Re-featurises at the model's frame rate.
-    classifySegment(seg, { fps, aspect }) {
-      const raws = resampleRaw([...seg.pre, ...seg.raw], fps, this.h.fps);
-      const pre = Math.round((seg.pre.length * this.h.fps) / (fps || this.h.fps));
-      const rows = P.featurise(raws, Math.min(pre, raws.length - 1), aspect, seg.mirrored);
-      if (!rows.length) return null;
-      const top = this.predict(rows);
-      const th = this.h.thresholds || { ok: 0.5, unsure: 0.15 };
-      const best = top[0];
-      const status = best.p >= th.ok ? 'ok' : best.p >= th.unsure ? 'uncertain' : 'reject';
-      return { label: best.word, status, p: best.p, top, source: 'model' };
+    classifySegment(seg, opts) { return classify(this, seg, opts); }
+  }
+
+  // Several member networks over the same labels; class probabilities are averaged, then (with allow)
+  // limited to the allowed classes and renormalised - the same order of operations as the trainer's export_ens.
+  class Ensemble {
+    constructor(h, members) { this.h = h; this.members = members; this.labels = h.labels; this.words = h.words || h.labels; }
+    get size() { return this.h.K; }
+    probs(rows) {
+      const K = this.h.K, p = new Float64Array(K);
+      for (const m of this.members) {
+        const lg = m.logits(rows); let mx = -Infinity; for (let k = 0; k < K; k++) if (lg[k] > mx) mx = lg[k];
+        let s = 0; const e = new Float64Array(K); for (let k = 0; k < K; k++) { e[k] = Math.exp(lg[k] - mx); s += e[k]; }
+        for (let k = 0; k < K; k++) p[k] += e[k] / s / this.members.length;
+      }
+      return p;
     }
+    predict(rows, topk = 5, allow = null) {
+      const p = this.probs(rows), K = p.length, ok = k => !allow || allow.has(k);
+      let s = 0; for (let k = 0; k < K; k++) if (ok(k)) s += p[k];
+      const idx = [...Array(K).keys()].filter(ok).sort((a, b) => p[b] - p[a]).slice(0, topk);
+      return idx.map(i => ({ index: i, label: this.labels[i], word: this.words[i], p: p[i] / s }));
+    }
+    classifySegment(seg, opts) { return classify(this, seg, opts); }
+  }
+
+  // A closed Lab segment -> one caption word. Re-featurises at the model's frame rate.
+  function classify(model, seg, { fps, aspect, allow = null }) {
+    const h = model.h;
+    const raws = resampleRaw([...seg.pre, ...seg.raw], fps, h.fps);
+    const pre = Math.round((seg.pre.length * h.fps) / (fps || h.fps));
+    const rows = P.featurise(raws, Math.min(pre, raws.length - 1), aspect, seg.mirrored);
+    if (!rows.length) return null;
+    const top = model.predict(rows, 5, allow);
+    const th = (allow && h.thresholds_childcare) || h.thresholds || { ok: 0.5, unsure: 0.15 };
+    const best = top[0];
+    const status = best.p >= th.ok ? 'ok' : best.p >= th.unsure ? 'uncertain' : 'reject';
+    return { label: best.word, status, p: best.p, top, source: 'model' };
   }
 
   function layerNorm(h, L, C, g, b) {
@@ -138,7 +179,7 @@
     }
   }
 
-  const api = { parse, resampleRows, resampleRaw, gelu };
+  const api = { parse, resampleRows, resampleRaw, gelu, Ensemble };
   root.SBSignModel = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
