@@ -3,11 +3,11 @@
 (function () {
   'use strict';
   const $ = s => document.querySelector(s);
-  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo, SM = window.SBSignModel, CC = window.SBChildcare;
+  const L = window.SBLayout, F = window.SBFeatures, R = window.SBRecognizer, P = window.SBPipeline, X = window.SBLexicon, DM = window.SBDemo, SM = window.SBSignModel, CC = window.SBChildcare, PS = window.SBPersonal;
   const D = F.D, W = L.N_RAW * 3;
 
   // ------------------------------------------------------------ settings (per-viewer convenience)
-  const DEFAULTS = { restY: 1.0, sens: 1.25, handed: 'auto', speak: 'sentence', fast: '1', signer: '', facing: 'user', sugSet: 'starter', care: false };
+  const DEFAULTS = { restY: 1.0, sens: 1.25, handed: 'auto', speak: 'sentence', fast: '1', signer: '', facing: 'user', sugSet: 'starter', care: false, mine: false, adapt: false };
   const settings = Object.assign({}, DEFAULTS, (() => { try { return JSON.parse(localStorage.getItem('sb-lab-settings') || '{}'); } catch { return {}; } })());
   const saveSettings = () => { try { localStorage.setItem('sb-lab-settings', JSON.stringify(settings)); } catch {} };
 
@@ -60,6 +60,7 @@
     pipe: null, model: new R.FewShot({ tauSlack: settings.sens }), examples: [],
     times: { lm: [], pipe: [] }, frameTimes: [], presence: [], light: null,
     teach: null, words: [], lastWordAt: 0, past: [], videoJob: null, videoFrames: null, lex: null, lastStats: null, signModel: null, careModel: null, careAllow: null, pending: null,
+    personal: null, embCache: new Map(),
   };
   S.video.playsInline = true; S.video.muted = true;
   const canvas = $('#view'), ctx = canvas.getContext('2d');
@@ -204,14 +205,75 @@
     return { model: S.signModel, allow: careAllowFor(S.signModel) };
   }
   const careWord = w => { const e = settings.care && CC.entry(w); return e ? e.word : w; };
+  // The signer adapter learns from, and is applied to, live camera signing only (a video is usually someone else).
+  const live = () => settings.adapt && S.source === 'camera';
   function recognise(seg, fps) {
-    const taught = S.model.ready ? S.model.spot(seg.frames) : [];
     const { model, allow } = activeModel();
+    if (settings.mine) {                 // "My words only": answer only among the taught words
+      if (model && S.personal && S.personal.ready && S.personal.forModel === model) {
+        let m = null;
+        try { m = model.classifySegment(seg, { fps: fps || 15, aspect: S.aspect, personal: S.personal, learn: live() }); } catch (e) { console.warn('personal', e); }
+        return m ? [{ start: 0, end: seg.frames.length - 1, label: careWord(m.label), status: m.status, p: m.p, source: 'personal',
+                      top: m.top.map(t => careWord(t.word)) }] : [];
+      }
+      return S.model.ready ? S.model.spot(seg.frames) : [];          // no model: the taught-signs matcher (taught words only)
+    }
+    const taught = S.model.ready ? S.model.spot(seg.frames) : [];
     if (taught.some(r => r.status === 'ok') || !model || (allow && !allow.size)) return taught;
     let m = null;
-    try { m = model.classifySegment(seg, { fps: fps || 15, aspect: S.aspect, allow }); } catch (e) { console.warn('model', e); }
+    try { m = model.classifySegment(seg, { fps: fps || 15, aspect: S.aspect, allow, learn: live(), adapt: live() }); } catch (e) { console.warn('model', e); }
     return m ? [{ start: 0, end: seg.frames.length - 1, label: careWord(m.label), status: m.status, p: m.p, source: 'model',
                   top: m.top.map(t => careWord(t.word)) }] : taught;
+  }
+  // ---- "My words only": the loaded model's view of each taught example (cached per model and example)
+  function refitPersonal() {
+    const { model } = activeModel();
+    if (!model) { S.personal = null; renderMine(); return; }
+    const key = `${model.h.name || ''}|${model.size}|${model.h.fps}`, exs = [];
+    for (const e of S.examples) {
+      if (!e.raw || e.raw.length < W * 2) continue;
+      const ck = `${key}|${e.id}`;
+      let a = S.embCache.get(ck);
+      if (!a) {
+        const rows = unflat(e.raw, W);
+        const fr = SM.segmentRows(model, { pre: rows.slice(0, e.preN), raw: rows.slice(e.preN), mirrored: e.mirrored }, { fps: e.fps || 15, aspect: e.aspect });
+        if (!fr.length) continue;
+        a = model.analyse(fr, { adapt: false }); S.embCache.set(ck, a);
+      }
+      exs.push({ label: e.label, p: a.p, emb: a.emb });
+    }
+    const t0 = performance.now();
+    S.personal = new PS.Personal(); S.personal.fit(model, exs); S.personal.forModel = model;
+    S.personalMs = performance.now() - t0;
+    renderMine();
+  }
+  function renderMine() {
+    const el = $('#mineStatus'); if (!el) return;
+    $('#mineMode').checked = !!settings.mine;
+    const { model } = activeModel(), P = S.personal, words = new Set(S.examples.map(e => e.label)).size;
+    let t;
+    if (!settings.mine) t = 'Off: taught signs are matched first and the model answers everything else. Tested on new signers, that mix made the model\'s other words worse, so turn this on once you have taught your words.';
+    else if (words < 2) t = 'On. Teach at least 2 words (3 or more examples each) and only those words will be recognised.';
+    else if (!model) t = `On: ${words} taught words, matched by example only (no model loaded). Load a model in Settings to use it together with your examples.`;
+    else if (!P || !P.ready) t = 'On. Working out your examples…';
+    else {
+      const st = P.stats;
+      t = `On: only your ${P.words.length} taught words are recognised, using the model and your examples together (${P.known} of them are also in the model).`
+        + (st && st.n ? ` Self-test: ${st.correct} of ${st.n} examples recognised when each is held out (same signer, so a best case).` : '');
+    }
+    el.textContent = t;
+  }
+  function setMine(on) { settings.mine = !!on; saveSettings(); refitPersonal(); renderCaption(); }
+  // ---- adapting to the signer (experimental)
+  function applyAdapt() { for (const m of [S.signModel, S.careModel]) if (m) m.setAdapting(settings.adapt); renderAdapt(); }
+  function resetAdapt() { for (const m of [S.signModel, S.careModel]) if (m) m.resetAdapting(); renderAdapt(); }
+  function renderAdapt() {
+    const el = $('#adaptStatus'); if (!el) return;
+    $('#adaptMode').checked = !!settings.adapt;
+    const { model } = activeModel();
+    el.textContent = !settings.adapt ? 'Off.' : !model ? 'On, but no model is loaded.'
+      : model.adaptActive ? `On: adjusted to this signer from ${model.adaptCount} signs (this session only).`
+      : `On: learning this signer's style, ${model.adaptCount} of 20 signs seen. It starts adjusting after 20.`;
   }
   function onSegment(seg, at) {
     if (!S.model.ready && !S.signModel) { toast(`Sign seen (${seg.frames.length} frames). Teach some signs or load a model to see words.`); return []; }
@@ -224,7 +286,7 @@
       if (settings.care && r.top) askConfirm(S.words.length - 1, r);
     }
     S.lastWordAt = clock();
-    renderCaption();
+    renderCaption(); if (settings.adapt) renderAdapt();
     return rs;
   }
   // ---- childcare: one-tap confirm, needs board
@@ -274,7 +336,7 @@
     settings.care = !!on; saveSettings();
     $('#careMode').checked = settings.care; $('#stage').classList.toggle('care', settings.care);
     if (!settings.care) { S.pending = null; $('#careConfirm').hidden = true; }
-    renderCaption();
+    refitPersonal(); renderAdapt(); renderCaption();
   }
   function maybeEndSentence(state) {
     if (!S.words.length || state !== 'idle' || clock() - S.lastWordAt < 1800) return;
@@ -292,6 +354,11 @@
     $('#capPast').innerHTML = S.past.map(ws => `<div>${wordsHtml(ws)}</div>`).join('');
     $('#capNow').innerHTML = S.words.length ? wordsHtml(S.words) : '';
     const nTaught = S.model.ready ? S.model.labels.length : 0;
+    if (settings.mine) {
+      const n = new Set(S.examples.map(e => e.label)).size;
+      $('#capMode').textContent = n >= 2 ? `${settings.care ? 'Childcare · ' : ''}My words only · ${n} words` : 'My words only: teach at least 2 words';
+      return;
+    }
     if (settings.care) {
       const n = careKnown().size;
       $('#capMode').textContent = n || nTaught ? ['Childcare', n ? `${n} words` : '', nTaught ? `${nTaught} taught` : ''].filter(Boolean).join(' · ')
@@ -404,6 +471,7 @@
       const stats = S.model.fit(S.examples.map(e => ({ label: e.label, frames: unflat(e.frames, D) })));
       S.fitMs = performance.now() - t0;
       renderVocab(stats); renderSignCard(); renderCaption(); renderData(); renderCareWords();
+      refitPersonal();
     }, 30);
   }
   function renderVocab(stats) {
@@ -446,12 +514,14 @@
   // ------------------------------------------------------------ recognition model (.sbm)
   function useModel(buf, name) {
     const m = SM.parse(buf);
-    S.signModel = m; renderModel(name); renderCaption(); renderSignCard(); renderCareWords();
+    S.signModel = m; m.setAdapting(settings.adapt); renderModel(name); renderCaption(); renderSignCard(); renderCareWords();
+    refitPersonal(); renderAdapt();
     return m;
   }
   function useCareModel(buf, name) {
     const m = SM.parse(buf);
-    S.careModel = m; renderCareModel(name); renderCaption(); renderCareWords();
+    S.careModel = m; m.setAdapting(settings.adapt); renderCareModel(name); renderCaption(); renderCareWords();
+    refitPersonal(); renderAdapt();
     return m;
   }
   const modelLine = (m, fileName) => {
@@ -505,11 +575,11 @@
   });
   $('#careModelRemove').addEventListener('click', async () => {
     S.careModel = null; try { await modelStore.clear('childcare'); } catch {}
-    renderCareModel(); renderCaption(); renderCareWords(); toast('Childcare model removed from this device.');
+    renderCareModel(); renderCaption(); renderCareWords(); refitPersonal(); renderAdapt(); toast('Childcare model removed from this device.');
   });
   $('#modelRemove').addEventListener('click', async () => {
     S.signModel = null; try { await modelStore.clear(); } catch {}
-    renderModel(); renderCaption(); renderSignCard(); renderCareModel(); renderCareWords(); toast('Model removed from this device.');
+    renderModel(); renderCaption(); renderSignCard(); renderCareModel(); renderCareWords(); refitPersonal(); renderAdapt(); toast('Model removed from this device.');
   });
 
   // ------------------------------------------------------------ demo: what to sign
@@ -698,6 +768,7 @@
       <tr><td>Frames per second</td><td>${f(fpsNow())}</td></tr>
       <tr><td>Camera</td><td>${S.video.videoWidth ? `${S.video.videoWidth}×${S.video.videoHeight}` : '–'}</td></tr>
       <tr><td>Recogniser update</td><td>${S.fitMs ? `${f(S.fitMs)} ms for ${S.examples.length} examples` : '–'}</td></tr>
+      <tr><td>My words update</td><td>${S.personalMs !== undefined ? `${f(S.personalMs)} ms` : '–'}</td></tr>
       <tr><td>Browser</td><td>${esc(navigator.userAgent)}</td></tr></table>`;
   }
   function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error(`Could not load ${src}`)); document.head.appendChild(s); }); }
@@ -773,6 +844,9 @@
   $('#clearYes').addEventListener('click', async () => { await store.clear(); S.examples = []; refit(); $('#clearConfirm').hidden = true; toast('All examples deleted.'); });
   $('#speedBtn').addEventListener('click', speedTest);
   $('#careMode').addEventListener('change', e => setCare(e.target.checked));
+  $('#mineMode').addEventListener('change', e => setMine(e.target.checked));
+  $('#adaptMode').addEventListener('change', e => { settings.adapt = e.target.checked; saveSettings(); applyAdapt(); });
+  $('#adaptReset').addEventListener('click', () => { resetAdapt(); toast('Signer adjustment cleared.'); });
   $('#careSearch').addEventListener('input', renderCareWords);
   $('#careWords').addEventListener('click', e => {
     const w = e.target.dataset && e.target.dataset.cword; if (!w || S.teach) return;
@@ -798,7 +872,7 @@
    ['#fast', 'fast', () => S.holistic && S.holistic.setOptions({ modelComplexity: Number(settings.fast) })]]
     .forEach(([id, key, after]) => { const el = $(id); el.value = settings[key]; el.addEventListener('change', () => { settings[key] = el.value; saveSettings(); after && after(); }); });
   $('#signerId').value = settings.signer;
-  $('#signerId').addEventListener('input', e => { settings.signer = e.target.value.trim(); saveSettings(); });
+  $('#signerId').addEventListener('input', e => { settings.signer = e.target.value.trim(); saveSettings(); resetAdapt(); });   // a new signer starts afresh
   setInterval(() => { if (!$('[data-pane="device"]').hidden) renderDevice(); }, 1000);
 
   // Test hook: feed raw landmark frames directly (bypasses the camera). Used by the
@@ -825,13 +899,14 @@
     lexicon: () => S.lex, renderSignCard, demo: player,
     loadModel: (buf, name) => useModel(buf, name), recognise,
     loadCareModel: (buf, name) => useCareModel(buf, name), setCare, pickConfirm, careKnown: () => careKnown(),
+    setMine, setAdapt: on => { settings.adapt = !!on; saveSettings(); applyAdapt(); }, resetAdapt, refitPersonal,
   };
 
   // ------------------------------------------------------------ boot
   (async () => {
     renderVocab(null); renderCaption(); renderData();
     loadLexicon().then(() => { window.SBLab.lexReady = true; });
-    renderNeeds(); renderCareModel(); renderCareWords(); setCare(settings.care);
+    renderNeeds(); renderCareModel(); renderCareWords(); setCare(settings.care); renderMine(); renderAdapt();
     Promise.all([
       modelStore.get().then(v => { if (v && v.buf) { try { useModel(v.buf, v.name); } catch {} } }).catch(() => {}),
       modelStore.get('childcare').then(v => { if (v && v.buf) { try { useCareModel(v.buf, v.name); } catch {} } }).catch(() => {}),

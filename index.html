@@ -150,6 +150,7 @@ input[type="number"] { width: 5.5em; }
 .credit { font-size: .8rem; color: var(--muted); }
 .modelbox { display: grid; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .modelbox .metrics { font-variant-numeric: tabular-nums; }
+#mineBox { margin: 4px 0 14px; } #mineBox .help { font-size: .9rem; } #mineBox .note { margin: 0; }
 .signcard .inmodel { color: var(--ok); font-weight: 700; font-size: .88rem; }
 .stat { font-size: .93rem; background: var(--sunk); border-radius: 14px; padding: 12px 14px; overflow-x: auto; }
 .stat table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
@@ -256,6 +257,11 @@ input[type="search"] { background: var(--sunk); border: 1px solid var(--line); b
     <div class="tabpane" data-pane="teach">
       <h2>Teach signs</h2>
       <p class="muted small">Type the English word, then sign it into the camera each time you are asked. Lower your hands below the dashed line between repetitions. Five repetitions per sign works well.</p>
+      <div class="modelbox" id="mineBox">
+        <label class="switch"><input type="checkbox" id="mineMode" role="switch"><span>My words only</span></label>
+        <span class="help" id="mineStatus"></span>
+        <p class="note small muted">Recognises only the words taught here, using the loaded model and your examples together. Tested on 8 signers the model had never seen, 96 words, 3 examples each: 52% right, against 30% for the model alone and 38% for matching examples alone. Words the model does not know at all are harder (19% in that test), so teach those with more examples.</p>
+      </div>
       <div class="row">
         <input type="text" id="teachWord" placeholder="e.g. thank you" maxlength="40" autocomplete="off">
         <input type="number" id="teachReps" min="2" max="20" value="5" aria-label="Repetitions">
@@ -384,6 +390,12 @@ input[type="search"] { background: var(--sunk); border: 1px solid var(--line); b
         <span class="help">Higher accepts signs that look less like the taught examples, such as a different signer. Unsure matches are shown as [word?].</span>
       </div>
       <div class="field">
+        <label class="switch"><input type="checkbox" id="adaptMode" role="switch"><span>Adapt to the signer (experimental)</span></label>
+        <span class="help" id="adaptStatus">Off.</span>
+        <span class="help">Learns the signer's own style from their live signing (no labels needed) and adjusts the model to it after 20 signs. In tests it added 1 point on ASL Citizen signers and 4 points on new PopSign signers, but it has not yet passed its proof threshold, so it stays off unless you turn it on. Kept for this session only; changing the signer ID starts afresh.</span>
+        <div class="row"><button class="btn" id="adaptReset" type="button">Start afresh</button></div>
+      </div>
+      <div class="field">
         <label for="handed">Signer's dominant hand</label>
         <select id="handed"><option value="auto">Detect automatically</option><option value="right">Right</option><option value="left">Left</option></select>
       </div>
@@ -409,6 +421,7 @@ input[type="search"] { background: var(--sunk); border: 1px solid var(--line); b
 <script src="js/demo.js"></script>
 <script src="js/signmodel.js"></script>
 <script src="js/childcare.js"></script>
+<script src="js/personal.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

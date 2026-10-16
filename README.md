@@ -25,12 +25,22 @@ No video leaves the device; taught examples stay in the browser unless exported 
   words, enlarges captions, says each word and offers a one-tap confirm (the top three guesses plus "None").
   A childcare model has its own slot; without one, the general model is limited to the childcare words.
   Children often sign their own way, so a child's version of a word can be taught and is matched first.
+- **My words only** (Teach tab): recognise only the words taught on this device, scoring each sign with the
+  loaded model and your own examples together (the model's probability for the word plus how close the sign is
+  to your examples in the model's own embedding). Tested on 8 signers the model had never seen, 96 words, 3
+  examples each: 52% right first time, against 30% for the model alone and 38% for matching examples alone.
+  Over the model's full vocabulary the same method made untaught words 2 points worse, so it is used only where
+  every answerable word is taught.
+- **Adapt to the signer** (Settings, experimental, off by default): after 20 live signs, adjusts the model to
+  the signer's own style from their unlabelled signing (this session only). Promising in tests (+1 to +4
+  points) but not yet past its proof threshold.
 - **Video**: recognise a recorded clip.
 - **Data**: export consented landmark recordings for training.
 - **Device**: landmark speed and a speed test of the 4.5M-parameter network shape (random weights).
 
 Run locally with a webcam: `python3 serve.py`, then open http://localhost:8000.
-Check the sign list and demos: `node tests/lexicon.test.js` (gates L1-L5), `node tests/demo.test.js` (gates D1-D7).
+Checks: `node tests/lexicon.test.js` (L1-L5), `node tests/demo.test.js` (D1-D7), `node tests/childcare.test.js` (C1-C4),
+`node tests/personal.test.js` (My words only, P1-P4).
 
 Vendored: MediaPipe Holistic (Apache-2.0), ONNX Runtime Web (MIT), Atkinson Hyperlegible, Bricolage Grotesque and IBM Plex Mono (OFL-1.1).
 Sign list (`data/lexicon.json`): ASL-LEX 2.0 phonology and frequency (Sehyr, Caselli, Cohen-Goldberg & Emmorey 2021,
